@@ -2,8 +2,11 @@ import React, { useState, useContext } from "react";
 import { Link } from "react-router-dom";
 import { FaShoppingCart, FaUserCircle } from "react-icons/fa"; // Icons
 import rivan_logo from "../assets/rivan_logo.png";
+import { AuthContext } from "../context/AuthProvider";
 
 const Header = () => {
+  const { isAuthenticated } = useContext(AuthContext);
+
   return (
     <header className="flex justify-around items-center px-8 py-4 shadow-md">
       {/* Logo Section */}
@@ -30,35 +33,38 @@ const Header = () => {
         </nav>
 
         {/* Icons */}
-        <>
-          <Link
-            to="/cart"
-            className="text-xl text-primary hover:text-primary-hover"
-          >
-            <FaShoppingCart />
-          </Link>
-          <Link
-            to="/profile"
-            className="text-xl text-primary hover:text-primary-hover"
-          >
-            <FaUserCircle />
-          </Link>
-        </>
-        <>
-          {/* Auth Buttons */}
-          <Link
-            to="/register"
-            className="border border-primary text-primary px-4 py-1 rounded-full hover:bg-blue-50 text-sm"
-          >
-            Register
-          </Link>
-          <Link
-            to="/login"
-            className="bg-primary text-white px-4 py-1 rounded-full hover:bg-primary-hover text-sm"
-          >
-            Sign In
-          </Link>
-        </>
+        {isAuthenticated ? (
+          <>
+            <Link
+              to="/cart"
+              className="text-xl text-primary hover:text-primary-hover"
+            >
+              <FaShoppingCart />
+            </Link>
+            <Link
+              to="/profile"
+              className="text-xl text-primary hover:text-primary-hover"
+            >
+              <FaUserCircle />
+            </Link>
+          </>
+        ) : (
+          <>
+            {/* Auth Buttons */}
+            <Link
+              to="/register"
+              className="border border-primary text-primary px-4 py-1 rounded-full hover:bg-blue-50 text-sm"
+            >
+              Register
+            </Link>
+            <Link
+              to="/login"
+              className="bg-primary text-white px-4 py-1 rounded-full hover:bg-primary-hover text-sm"
+            >
+              Sign In
+            </Link>
+          </>
+        )}
       </div>
     </header>
   );

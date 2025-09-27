@@ -1,7 +1,7 @@
-// src/pages/Cart.jsx
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { products } from "../api/products";
+import axiosInstance from "../api/axiosInstance";
+import { BASE_URL } from "../api/api_url";
 
 /* ------- Reusable Modals ------- */
 const ModalShell = ({ open, onClose, title, children, actions }) => {
@@ -34,8 +34,22 @@ const ModalShell = ({ open, onClose, title, children, actions }) => {
   );
 };
 
-const ErrorModal = ({ open, onClose, message }) => (
-  <ModalShell open={open} onClose={onClose} title="Something went wrong">
+const ErrorModal = ({ open, onClose, message, kind = "other", onLogin }) => (
+  <ModalShell
+    open={open}
+    onClose={onClose}
+    title="Something went wrong"
+    actions={
+      kind === "auth" ? (
+        <button
+          onClick={onLogin}
+          className="px-4 py-2 rounded-lg bg-blue-900 text-white hover:bg-blue-800"
+        >
+          Log in
+        </button>
+      ) : null
+    }
+  >
     <p>{message}</p>
   </ModalShell>
 );
@@ -72,30 +86,17 @@ const currency = (n) =>
     currency: "PHP",
   });
 
-// "₱59,999" -> 59999
-const priceToNumber = (priceStr) =>
-  Number(String(priceStr).replace(/[^\d.]/g, "")) || 0;
-
 const Cart = () => {
-  const navigate = useNavigate();
-
-  // Seed the cart with a few local products (pick any you want)
-  const [cartItems, setCartItems] = useState(
-    products.slice(0, 3).map((p, idx) => ({
-      id: idx + 1, // local id
-      name: p.name,
-      image: p.image,
-      price: priceToNumber(p.price),
-      quantity: 1,
-      countInStock: 12, // static inventory cap
-    }))
-  );
-
+  const [cartItems, setCartItems] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [checkingOut, setCheckingOut] = useState(false);
 
-  // Error + confirm state
+  // Error modal state
   const [errorOpen, setErrorOpen] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  const [errorKind, setErrorKind] = useState("other"); // 'auth' | 'other'
+
+  // Confirm remove modal state
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [toRemove, setToRemove] = useState({ id: null, name: "", subtotal: 0 });
 
@@ -109,38 +110,81 @@ const Cart = () => {
     mobile: "",
   });
 
-  const openError = (msg) => {
+  const navigate = useNavigate();
+
+  const openError = (msg, kind = "other") => {
     setErrorMsg(msg);
+    setErrorKind(kind);
     setErrorOpen(true);
   };
 
-  const viewItems = cartItems;
+  // Load cart
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        const { data } = await axiosInstance.get("cart/");
+        setCartItems(data);
+      } catch (e) {
+        console.error(e);
+        if (e?.response?.status === 401) {
+          openError("Please log in to view your cart.", "auth");
+        } else {
+          openError("Failed to load cart. Please try again.");
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, []);
+
+  // Presentational mapping
+  const viewItems = useMemo(
+    () =>
+      cartItems.map((it) => ({
+        id: it.cart_id,
+        name: it.product?.product_name,
+        price: Number(it.product?.product_price || 0),
+        quantity: Number(it.qty || 0),
+        image: it.product?.image ? `${BASE_URL}${it.product.image}` : "",
+        countInStock: Number(it.product?.countInStock || 0),
+      })),
+    [cartItems]
+  );
 
   const total = useMemo(
     () => viewItems.reduce((sum, it) => sum + it.price * it.quantity, 0),
     [viewItems]
   );
 
-  const syncQty = (id, newQty) => {
-    setCartItems((items) =>
-      items.map((it) => (it.id === id ? { ...it, quantity: newQty } : it))
-    );
+  const syncQty = async (cartId, newQty) => {
+    try {
+      await axiosInstance.put(`cart/${cartId}/`, { qty: newQty });
+      setCartItems((items) =>
+        items.map((it) => (it.cart_id === cartId ? { ...it, qty: newQty } : it))
+      );
+    } catch (e) {
+      console.error(e);
+      openError("Could not update quantity. Please try again.");
+    }
   };
 
-  const increment = (id) => {
-    const item = viewItems.find((i) => i.id === id);
+  const increment = (cartId) => {
+    const item = viewItems.find((i) => i.id === cartId);
     if (!item) return;
     const capped = Math.min(item.quantity + 1, item.countInStock || 0);
-    if (capped !== item.quantity) syncQty(id, capped);
+    if (capped !== item.quantity) syncQty(cartId, capped);
   };
 
-  const decrement = (id) => {
-    const item = viewItems.find((i) => i.id === id);
+  const decrement = (cartId) => {
+    const item = viewItems.find((i) => i.id === cartId);
     if (!item) return;
     const next = Math.max(1, item.quantity - 1);
-    if (next !== item.quantity) syncQty(id, next);
+    if (next !== item.quantity) syncQty(cartId, next);
   };
 
+  // Prompt remove
   const promptRemove = (item) => {
     setToRemove({
       id: item.id,
@@ -150,11 +194,19 @@ const Cart = () => {
     setConfirmOpen(true);
   };
 
-  const confirmRemove = () => {
+  // Confirm removal
+  const confirmRemove = async () => {
     const id = toRemove.id;
     setConfirmOpen(false);
-    setCartItems((items) => items.filter((it) => it.id !== id));
-    setToRemove({ id: null, name: "", subtotal: 0 });
+    try {
+      await axiosInstance.delete(`cart/${id}/delete/`);
+      setCartItems((items) => items.filter((it) => it.cart_id !== id));
+    } catch (e) {
+      console.error(e);
+      openError("Could not remove item. Please try again.");
+    } finally {
+      setToRemove({ id: null, name: "", subtotal: 0 });
+    }
   };
 
   const onCheckoutChange = (e) => {
@@ -162,10 +214,7 @@ const Cart = () => {
     setCheckout((c) => ({ ...c, [name]: value }));
   };
 
-  // Static "checkout" — just validates and shows a success modal
-  const [successOpen, setSuccessOpen] = useState(false);
-
-  const proceedToCheckout = () => {
+  const proceedToCheckout = async () => {
     if (viewItems.length === 0) {
       openError("Your cart is empty.");
       return;
@@ -186,11 +235,32 @@ const Cart = () => {
     }
 
     setCheckingOut(true);
-    // Simulate success
-    setTimeout(() => {
+    try {
+      const payload = { total_price: total, ...checkout };
+      const { data } = await axiosInstance.post(
+        "api/payments/create/",
+        payload
+      );
+      if (data?.checkout_url) {
+        window.location.href = data.checkout_url; // PayMongo hosted checkout
+      } else {
+        openError("Payment link not returned. Please try again.");
+      }
+    } catch (e) {
+      console.error(e);
+      if (e?.response?.status === 401) {
+        openError("Your session has expired. Please log in again.", "auth");
+      } else {
+        const errMsg = e?.response?.data?.error
+          ? typeof e.response.data.error === "string"
+            ? e.response.data.error
+            : JSON.stringify(e.response.data.error)
+          : "Failed to create payment. Please try again.";
+        openError(errMsg);
+      }
+    } finally {
       setCheckingOut(false);
-      setSuccessOpen(true);
-    }, 500);
+    }
   };
 
   return (
@@ -199,7 +269,11 @@ const Cart = () => {
         <div>
           <h1 className="text-2xl font-bold mb-4">Shopping Cart</h1>
 
-          {viewItems.length === 0 ? (
+          {loading ? (
+            <div className="rounded-2xl bg-white shadow-md p-10 text-center text-gray-500">
+              Loading cart…
+            </div>
+          ) : viewItems.length === 0 ? (
             <div className="rounded-2xl bg-white shadow-md p-10 text-center text-gray-500">
               Your cart is empty.
             </div>
@@ -344,24 +418,26 @@ const Cart = () => {
 
             <button
               onClick={proceedToCheckout}
-              disabled={checkingOut || viewItems.length === 0}
+              disabled={checkingOut || loading || viewItems.length === 0}
               className="mt-4 w-full bg-primary hover:bg-primary-hover text-white py-3 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed shadow"
             >
               {checkingOut ? "Creating Payment Link..." : "Proceed to Checkout"}
             </button>
 
             <p className="text-xs text-gray-500 mt-2">
-              Demo only: no real payment will be made.
+              You’ll be redirected to PayMongo (GCash) to complete payment.
             </p>
           </div>
         </aside>
       </div>
 
-      {/* Error Modal */}
+      {/* Error Modal (all errors funnel here) */}
       <ErrorModal
         open={errorOpen}
         onClose={() => setErrorOpen(false)}
         message={errorMsg}
+        kind={errorKind}
+        onLogin={() => navigate("/login")}
       />
 
       {/* Confirm Remove Modal */}
@@ -385,33 +461,6 @@ const Cart = () => {
         confirmText="Remove"
         onConfirm={confirmRemove}
       />
-
-      {/* Success (fake checkout) */}
-      <ModalShell
-        open={successOpen}
-        onClose={() => setSuccessOpen(false)}
-        title="Checkout (Demo)"
-        actions={
-          <button
-            onClick={() => {
-              setSuccessOpen(false);
-              // clear the cart for the demo
-              setCartItems([]);
-              navigate("/");
-            }}
-            className="px-4 py-2 rounded-lg bg-blue-900 text-white hover:bg-blue-800"
-          >
-            Done
-          </button>
-        }
-      >
-        <p className="mb-2">
-          Thanks! This is a static demo—no payment processed.
-        </p>
-        <p>
-          Order total: <strong>{currency(total)}</strong>
-        </p>
-      </ModalShell>
     </>
   );
 };
